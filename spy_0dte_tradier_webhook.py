@@ -1,3 +1,25 @@
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+# Dummy Google Sheets logging test
+def log_to_google_sheets(signal, symbol, qty, price, total, balance, pnl):
+    import requests
+    import os
+    webhook_url = os.getenv("GOOGLE_SHEET_WEBHOOK")
+
+    payload = {
+        "signal": signal,
+        "option_symbol": symbol,
+        "quantity": qty,
+        "price": price,
+        "total_spent": total,
+        "cash_balance": balance,
+        "pnl": pnl
+    }
+
+    requests.post(webhook_url, json=payload)
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -19,3 +41,6 @@ def webhook():
     )
 
     return jsonify({"status": "success", "test": "sheet_only"})
+
+if __name__ == "__main__":
+    app.run(port=5000)
