@@ -1,42 +1,45 @@
 from flask import Flask, request, jsonify
-import requests
+import csv
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 
-# 🔧 Logs trade details to your Google Sheet
-def log_to_google_sheets(signal, symbol, qty, price, total, balance, pnl):
-    webhook_url = os.getenv("GOOGLE_SHEET_WEBHOOK")
-    print("Google Sheets webhook URL:", webhook_url)
+# --- Log to CSV Function ---
+def log_to_csv(signal, symbol, qty, price, total, balance, pnl):
+    file_path = "trades.csv"
+    file_exists = os.path.isfile(file_path)
 
-    payload = {
-        "signal": signal,
-        "option_symbol": symbol,
-        "quantity": qty,
-        "price": price,
-        "total_spent": total,
-        "cash_balance": balance,
-        "pnl": pnl
-    }
+    with open(file_path, mode="a", newline="") as csv_file:
+        fieldnames = ["timestamp", "signal", "option_symbol", "quantity", "price", "total_spent", "cash_balance", "pnl"]
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
 
-    try:
-        res = requests.post(webhook_url, json=payload)
-        print("Google Sheet response:", res.text)
-    except Exception as e:
-        print("Error sending to Google Sheets:", str(e))
+        if not file_exists:
+            writer.writeheader()
 
-# 🔁 Webhook endpoint
+        writer.writerow({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "signal": signal,
+            "option_symbol": symbol,
+            "quantity": qty,
+            "price": price,
+            "total_spent": total,
+            "cash_balance": balance,
+            "pnl": pnl
+        })
+
+# --- Webhook Endpoint ---
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
-    print("Received alert:", data)
+    print("Received data:", data)
 
     signal = data.get("signal", "").lower()
     if signal not in ["buy", "sell"]:
         return jsonify({"status": "error", "message": "Invalid signal"})
 
-    # 👇 Log a dummy trade to Google Sheets
-    log_to_google_sheets(
+    # Dummy data to simulate trade
+    log_to_csv(
         signal=signal,
         symbol="SPYTEST",
         qty=1,
@@ -48,6 +51,6 @@ def webhook():
 
     return jsonify({"status": "success", "message": "logged to sheet"})
 
-# ✅ Required for Render to expose the port
+# --- Render requires host to be 0.0.0.0 ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
