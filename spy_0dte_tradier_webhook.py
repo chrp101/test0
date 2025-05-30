@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 # --- Log to CSV Function ---
 def log_to_csv(signal, symbol, qty, price, total, balance, pnl):
-    file_path = "trades.csv"
+    file_path = "/tmp/trades.csv"  # Use /tmp for container compatibility
     file_exists = os.path.isfile(file_path)
 
     with open(file_path, mode="a", newline="") as csv_file:
@@ -38,7 +38,7 @@ def webhook():
     if signal not in ["buy", "sell"]:
         return jsonify({"status": "error", "message": "Invalid signal"})
 
-    # Dummy data to simulate trade
+    # Dummy trade log
     log_to_csv(
         signal=signal,
         symbol="SPYTEST",
@@ -51,6 +51,6 @@ def webhook():
 
     return jsonify({"status": "success", "message": "logged to sheet"})
 
-# --- Render requires host to be 0.0.0.0 ---
+# --- Run on Render ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
