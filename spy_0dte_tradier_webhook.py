@@ -5,10 +5,9 @@ import os
 
 app = Flask(__name__)
 
-# Get environment variables
-TRADIER_TOKEN = os.getenv("TRADIER_TOKEN")
-ACCOUNT_ID = os.getenv("ACCOUNT_ID")
-
+# === Configuration ===
+TRADIER_TOKEN = os.environ.get("TRADIER_TOKEN")
+ACCOUNT_ID = os.environ.get("ACCOUNT_ID")
 HEADERS = {
     "Authorization": f"Bearer {TRADIER_TOKEN}",
     "Accept": "application/json",
@@ -16,8 +15,7 @@ HEADERS = {
 }
 BASE_URL = "https://sandbox.tradier.com/v1"
 
-# --- Tradier Helpers ---
-
+# === Tradier Helpers ===
 def get_spy_price():
     url = f"{BASE_URL}/markets/quotes?symbols=SPY"
     res = requests.get(url, headers=HEADERS)
@@ -29,13 +27,12 @@ def get_cash_balance():
     return float(res.json()["balances"]["cash_available"])
 
 def get_today_expiry():
-    return datetime.datetime.now().strftime("%y%m%d")  # e.g. 250531
+    return datetime.datetime.now().strftime("%y%m%d")  # e.g., 250530
 
 def close_all_positions():
     url = f"{BASE_URL}/accounts/{ACCOUNT_ID}/positions"
     res = requests.get(url, headers=HEADERS).json()
-
-    if "positions" not in res or res["positions"] is None:
+    if "positions" not in res or not res["positions"]:
         return
 
     for pos in res["positions"]["position"]:
@@ -61,12 +58,13 @@ def place_option_order(signal):
     option_symbol = f"SPY{expiry}{right}{strike:08d}"
 
     cash = get_cash_balance()
-    est_price = 1.00  # Assumed $1 per contract
-    contracts = int(cash // (est_price * 100))
+    estimated_price = 1.00
+    contracts = int(cash // (estimated_price * 100))
     if contracts == 0:
         print("Not enough cash to trade.")
         return
 
+    print(f"Placing {signal.upper()} order: {contracts}x {option_symbol}")
     payload = {
         "class": "option",
         "symbol": option_symbol,
@@ -75,32 +73,26 @@ def place_option_order(signal):
         "type": "market",
         "duration": "day"
     }
+    res = requests.post(f"{BASE_URL}/accounts/{ACCOUNT_ID}/orders", headers=HEADERS, data=payload)
+    print(res.text)
 
-    url = f"{BASE_URL}/accounts/{ACCOUNT_ID}/orders"
-    res = requests.post(url, headers=HEADERS, data=payload)
-    print("Order Response:", res.text)
-
-# --- Webhook Endpoint ---
-
+# === Webhook Endpoint ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    data = request.get_json(force=True)
+    print("Received data:", data)
+
+    signal = data.get("signal", "").lower()
+    if signal not in ["buy", "sell"]:
+        return jsonify({"status": "error", "message": "Invalid signal"})
+
     try:
-        data = request.get_json(force=True)
-        print("Webhook received:", data)
-
-        signal = data.get("signal", "").lower()
-        if signal not in ["buy", "sell"]:
-            return jsonify({"status": "error", "message": "Invalid signal"})
-
         close_all_positions()
         place_option_order(signal)
-
-        return jsonify({"status": "success", "message": f"{signal} order placed"})
-
+        return jsonify({"status": "success", "message": f"Executed {signal} order"})
     except Exception as e:
-        print("Error in webhook:", str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)})
 
-# --- Required for Render deployment ---
+# === Render requirement ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
