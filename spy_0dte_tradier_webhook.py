@@ -46,49 +46,104 @@ def get_today_expiry():
 def close_all_positions():
     """Close all existing positions"""
     try:
+        print("Checking for existing positions...")
         res = requests.get(f"{BASE_URL}/accounts/{ACCOUNT_ID}/positions", headers=HEADERS)
-        res.raise_for_status()
-        data = res.json()
+        print(f"Positions API response status: {res.status_code}")
         
-        # Handle case where no positions exist
-        if "positions" not in data or not data["positions"]:
+        if not res.ok:
+            print(f"Error getting positions: {res.text}")
+            return False
+            
+        data = res.json()
+        print(f"Positions API response: {data}")
+        
+        # Handle different response formats from Tradier API
+        if "positions" not in data:
+            print("No 'positions' key in response - likely no positions")
+            return True
+            
+        positions_data = data["positions"]
+        
+        # Handle null or empty positions
+        if not positions_data or positions_data == "null":
             print("No positions to close")
             return True
             
-        positions = data["positions"].get("position", [])
+        # Extract position array
+        if isinstance(positions_data, dict):
+            positions = positions_data.get("position", [])
+        else:
+            positions = positions_data
+            
+        if not positions:
+            print("No positions found in response")
+            return True
+            
+        # Ensure positions is a list
         if not isinstance(positions, list):
             positions = [positions]
         
-        for pos in positions:
-            symbol = pos["symbol"]
-            qty = abs(int(pos["quantity"]))  # Use absolute value
-            
-            # Determine correct side based on position type
-            if pos["quantity"] > 0:  # Long position
-                side = "sell_to_close"
-            else:  # Short position
-                side = "buy_to_close"
-            
-            payload = {
-                "class": "option",
-                "symbol": symbol,
-                "side": side,
-                "quantity": qty,
-                "type": "market",
-                "duration": "day"
-            }
-            
-            print(f"Closing position: {symbol}, {qty} contracts, {side}")
-            close_res = requests.post(f"{BASE_URL}/accounts/{ACCOUNT_ID}/orders", headers=HEADERS, data=payload)
-            if not close_res.ok:
-                print(f"Error closing position {symbol}: {close_res.text}")
+        print(f"Found {len(positions)} position(s) to close")
+        
+        success_count = 0
+        for i, pos in enumerate(positions):
+            try:
+                print(f"Processing position {i+1}: {pos}")
+                
+                symbol = pos.get("symbol")
+                quantity = pos.get("quantity")
+                
+                if not symbol or quantity is None:
+                    print(f"Skipping invalid position: {pos}")
+                    continue
+                
+                qty = abs(int(float(quantity)))  # Handle string quantities
+                if qty == 0:
+                    print(f"Skipping zero quantity position: {symbol}")
+                    continue
+                
+                # Determine correct side based on position type
+                if float(quantity) > 0:  # Long position
+                    side = "sell_to_close"
+                else:  # Short position
+                    side = "buy_to_close"
+                
+                payload = {
+                    "class": "option",
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": qty,
+                    "type": "market",
+                    "duration": "day"
+                }
+                
+                print(f"Closing position: {symbol}, {qty} contracts, {side}")
+                close_res = requests.post(f"{BASE_URL}/accounts/{ACCOUNT_ID}/orders", headers=HEADERS, data=payload)
+                
+                if close_res.ok:
+                    order_data = close_res.json()
+                    print(f"Close order placed successfully: {order_data}")
+                    success_count += 1
+                else:
+                    print(f"Error closing position {symbol}: Status {close_res.status_code}, Response: {close_res.text}")
+                    
+            except Exception as pos_error:
+                print(f"Error processing individual position: {pos_error}")
+                continue
+        
+        print(f"Successfully placed {success_count} close orders out of {len(positions)} positions")
         
         # Wait a moment for orders to process
-        time.sleep(2)
-        return True
+        if success_count > 0:
+            print("Waiting for close orders to process...")
+            time.sleep(3)
+        
+        return True  # Return True even if some positions failed to close
         
     except Exception as e:
-        print(f"Error closing positions: {e}")
+        print(f"Error in close_all_positions: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def get_option_price(option_symbol):
@@ -205,11 +260,10 @@ def webhook():
         
         print(f"Processing {signal.upper()} signal...")
         
-        # Close existing positions first
-        if not close_all_positions():
-            error_msg = "Failed to close existing positions"
-            print(error_msg)
-            return jsonify({"status": "error", "message": error_msg}), 500
+        # Try to close existing positions first (but don't fail if this doesn't work)
+        close_success = close_all_positions()
+        if not close_success:
+            print("Warning: Failed to close existing positions, but continuing with new order...")
         
         # Place new option order
         if not place_option_order(signal):
@@ -218,6 +272,8 @@ def webhook():
             return jsonify({"status": "error", "message": error_msg}), 500
         
         success_msg = f"{signal.upper()} order placed successfully"
+        if not close_success:
+            success_msg += " (warning: existing positions may not have been closed)"
         print(success_msg)
         return jsonify({"status": "success", "message": success_msg})
         
@@ -239,6 +295,66 @@ def health_check():
         "timestamp": datetime.now().isoformat(),
         "tradier_configured": bool(TRADIER_TOKEN and ACCOUNT_ID)
     })
+
+@app.route("/debug", methods=["GET"])
+def debug_info():
+    """Debug endpoint to check account status"""
+    try:
+        debug_data = {
+            "timestamp": datetime.now().isoformat(),
+            "config": {
+                "tradier_token_set": bool(TRADIER_TOKEN),
+                "account_id_set": bool(ACCOUNT_ID),
+                "base_url": BASE_URL
+            }
+        }
+        
+        # Test positions API
+        try:
+            pos_res = requests.get(f"{BASE_URL}/accounts/{ACCOUNT_ID}/positions", headers=HEADERS)
+            debug_data["positions_api"] = {
+                "status_code": pos_res.status_code,
+                "response": pos_res.json() if pos_res.ok else pos_res.text
+            }
+        except Exception as e:
+            debug_data["positions_api"] = {"error": str(e)}
+        
+        # Test balances API
+        try:
+            bal_res = requests.get(f"{BASE_URL}/accounts/{ACCOUNT_ID}/balances", headers=HEADERS)
+            debug_data["balances_api"] = {
+                "status_code": bal_res.status_code,
+                "response": bal_res.json() if bal_res.ok else bal_res.text
+            }
+        except Exception as e:
+            debug_data["balances_api"] = {"error": str(e)}
+        
+        # Test quotes API
+        try:
+            quote_res = requests.get(f"{BASE_URL}/markets/quotes?symbols=SPY", headers=HEADERS)
+            debug_data["quotes_api"] = {
+                "status_code": quote_res.status_code,
+                "response": quote_res.json() if quote_res.ok else quote_res.text
+            }
+        except Exception as e:
+            debug_data["quotes_api"] = {"error": str(e)}
+        
+        return jsonify(debug_data)
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/test-close", methods=["POST"])
+def test_close():
+    """Test endpoint to manually trigger position closing"""
+    try:
+        result = close_all_positions()
+        return jsonify({
+            "success": result,
+            "message": "Position closing completed" if result else "Position closing failed"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     print("Starting TradingView to Tradier webhook server...")
