@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 import os
+import json
 from datetime import datetime
 
 app = Flask(__name__)
@@ -76,7 +77,7 @@ def place_option_order(signal):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        data = request.json
+        data = json.loads(request.data)
         print("Received alert:", data)
         signal = data.get("signal", "").lower()
         if signal not in ["buy", "sell"]:
