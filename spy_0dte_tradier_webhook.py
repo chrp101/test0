@@ -168,12 +168,18 @@ def get_option_price(option_symbol):
 def place_option_order(signal):
     """Place option order based on signal"""
     try:
+        print(f"Starting to place {signal} order...")
+        
+        # Get SPY price
         spy_price = get_spy_price()
         if spy_price is None:
             print("Could not get SPY price")
             return False
+        print(f"Current SPY price: ${spy_price:.2f}")
             
+        # Get today's expiry
         expiry = get_today_expiry()
+        print(f"Using expiry: {expiry}")
         
         # Determine strike and option type based on signal
         if signal == "sell":
@@ -185,24 +191,54 @@ def place_option_order(signal):
             strike = round(spy_price)
             right = "C"
         
+        print(f"Strike: {strike}, Option type: {right}")
+        
         # Format option symbol properly
         option_symbol = f"SPY{expiry}{right}{strike:08d}"
+        print(f"Option symbol: {option_symbol}")
+        
+        # Check if this option exists by trying to get a quote
+        print("Checking if option exists...")
+        try:
+            quote_res = requests.get(f"{BASE_URL}/markets/quotes?symbols={option_symbol}", headers=HEADERS)
+            if quote_res.ok:
+                quote_data = quote_res.json()
+                print(f"Option quote response: {quote_data}")
+            else:
+                print(f"Warning: Could not get quote for {option_symbol}: {quote_res.text}")
+        except Exception as quote_error:
+            print(f"Warning: Error getting option quote: {quote_error}")
         
         # Get current option price for better quantity calculation
         option_price = get_option_price(option_symbol)
+        print(f"Estimated option price: ${option_price:.2f}")
         
+        # Get cash balance
         cash = get_cash_balance()
+        print(f"Available cash: ${cash:.2f}")
+        
         if cash <= 0:
             print("No cash available")
             return False
             
         # Calculate number of contracts (each contract = 100 shares)
-        # Leave some buffer by using 90% of available cash
-        contracts = int((cash * 0.9) // (option_price * 100))
+        # Use a more conservative approach - start with 1 contract or 10% of cash
+        max_contracts_by_cash = int((cash * 0.1) // (option_price * 100))
+        contracts = max(1, min(max_contracts_by_cash, 5))  # At least 1, max 5 for safety
         
-        if contracts == 0:
-            print(f"Not enough cash. Available: ${cash:.2f}, Option price estimate: ${option_price:.2f}")
-            return False
+        estimated_cost = option_price * contracts * 100
+        print(f"Contracts to buy: {contracts}")
+        print(f"Estimated total cost: ${estimated_cost:.2f}")
+        
+        if estimated_cost > cash:
+            print(f"Estimated cost (${estimated_cost:.2f}) exceeds available cash (${cash:.2f})")
+            contracts = 1  # Try with just 1 contract
+            estimated_cost = option_price * 100
+            print(f"Reducing to 1 contract, estimated cost: ${estimated_cost:.2f}")
+            
+            if estimated_cost > cash:
+                print("Not enough cash even for 1 contract")
+                return False
         
         payload = {
             "class": "option",
@@ -213,23 +249,39 @@ def place_option_order(signal):
             "duration": "day"
         }
         
-        print(f"Placing {signal.upper()} order:")
-        print(f"  Symbol: {option_symbol}")
-        print(f"  Contracts: {contracts}")
-        print(f"  Estimated cost: ${option_price * contracts * 100:.2f}")
+        print(f"Order payload: {payload}")
         
+        print(f"Placing {signal.upper()} order to Tradier...")
         order_res = requests.post(f"{BASE_URL}/accounts/{ACCOUNT_ID}/orders", headers=HEADERS, data=payload)
+        
+        print(f"Order response status: {order_res.status_code}")
+        print(f"Order response headers: {dict(order_res.headers)}")
         
         if order_res.ok:
             order_data = order_res.json()
-            print(f"Order placed successfully. Order ID: {order_data.get('order', {}).get('id', 'Unknown')}")
+            print(f"Order placed successfully!")
+            print(f"Full response: {order_data}")
+            order_id = order_data.get('order', {}).get('id', 'Unknown')
+            print(f"Order ID: {order_id}")
             return True
         else:
-            print(f"Error placing order: {order_res.text}")
+            print(f"Error placing order!")
+            print(f"Status code: {order_res.status_code}")
+            print(f"Response text: {order_res.text}")
+            
+            # Try to parse error response
+            try:
+                error_data = order_res.json()
+                print(f"Error JSON: {error_data}")
+            except:
+                print("Could not parse error response as JSON")
+            
             return False
             
     except Exception as e:
-        print(f"Error placing option order: {e}")
+        print(f"Exception in place_option_order: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 @app.route("/webhook", methods=["POST"])
@@ -352,6 +404,24 @@ def test_close():
         return jsonify({
             "success": result,
             "message": "Position closing completed" if result else "Position closing failed"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/test-order", methods=["POST"])
+def test_order():
+    """Test endpoint to manually test order placement"""
+    try:
+        data = request.get_json() or {}
+        signal = data.get("signal", "buy").lower()
+        
+        if signal not in ["buy", "sell"]:
+            return jsonify({"error": "Invalid signal. Use 'buy' or 'sell'"}), 400
+            
+        result = place_option_order(signal)
+        return jsonify({
+            "success": result,
+            "message": f"{signal} order completed" if result else f"{signal} order failed"
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
